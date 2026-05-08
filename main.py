@@ -53,7 +53,8 @@ def main() -> int:
 
     config = load_config()
     manager = AudioDeviceManager(config.sound_volume_view_path, config)
-    app = AudioSwitcherApp(manager, config)
+    start_minimized = "--minimized" in sys.argv or "--tray" in sys.argv
+    app = AudioSwitcherApp(manager, config, start_minimized=start_minimized)
     app.run()
     return 0
 

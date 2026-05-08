@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+if sys.platform == "win32":
+    import winreg
+else:  # pragma: no cover - app is Windows-only, this keeps imports safe.
+    winreg = None  # type: ignore[assignment]
 
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.json"
 LOG_PATH = APP_DIR / "audio_switcher.log"
+STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+STARTUP_REG_NAME = "WindowsAudioDeviceSwitcher"
 
 
 @dataclass(slots=True)
@@ -34,6 +42,7 @@ class PreferredDevice:
 class AppConfig:
     window: WindowState = field(default_factory=WindowState)
     auto_refresh: bool = True
+    start_with_windows: bool = True
     preferred_playback: list[PreferredDevice] = field(default_factory=list)
     preferred_recording: list[PreferredDevice] = field(default_factory=list)
     sound_volume_view_path: str = "SoundVolumeView.exe"
@@ -96,6 +105,7 @@ def load_config() -> AppConfig:
         config = AppConfig(
             window=_coerce_window(raw.get("window", {})),
             auto_refresh=bool(raw.get("auto_refresh", True)),
+            start_with_windows=bool(raw.get("start_with_windows", True)),
             preferred_playback=_coerce_preferred_list(raw.get("preferred_playback", [])),
             preferred_recording=_coerce_preferred_list(raw.get("preferred_recording", [])),
             sound_volume_view_path=str(raw.get("sound_volume_view_path", "SoundVolumeView.exe")),
@@ -133,3 +143,60 @@ def upsert_preferred_device(config: AppConfig, kind_value: str, device_id: str, 
     target.append(preferred)
     return preferred
 
+
+def remove_preferred_device(config: AppConfig, kind_value: str, device_id: str) -> bool:
+    """Remove a preferred device by endpoint ID."""
+
+    target = preferred_devices(config, kind_value)
+    original_count = len(target)
+    target[:] = [device for device in target if device.id != device_id]
+    return len(target) != original_count
+
+
+def has_preferred_devices(config: AppConfig, kind_value: str | None = None) -> bool:
+    if kind_value:
+        return bool(preferred_devices(config, kind_value))
+    return bool(config.preferred_playback or config.preferred_recording)
+
+
+def is_preferred_device(config: AppConfig, kind_value: str, device_id: str) -> bool:
+    return any(device.id == device_id for device in preferred_devices(config, kind_value))
+
+
+def startup_command() -> str:
+    """Return the command registered in HKCU Run."""
+
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" --minimized'
+    return f'"{sys.executable}" "{APP_DIR / "main.py"}" --minimized'
+
+
+def set_startup_enabled(enabled: bool) -> None:
+    """Add or remove this app from HKCU Windows startup."""
+
+    if winreg is None:
+        raise RuntimeError("Windows startup registration is supported on Windows only.")
+
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_SET_VALUE) as key:
+        if enabled:
+            winreg.SetValueEx(key, STARTUP_REG_NAME, 0, winreg.REG_SZ, startup_command())
+        else:
+            try:
+                winreg.DeleteValue(key, STARTUP_REG_NAME)
+            except FileNotFoundError:
+                pass
+
+
+def is_startup_enabled() -> bool:
+    if winreg is None:
+        return False
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, STARTUP_REG_NAME)
+            return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logging.exception("Failed to read startup registration")
+        return False

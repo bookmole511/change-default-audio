@@ -21,7 +21,7 @@ import comtypes
 from comtypes import CLSCTX_ALL, COMMETHOD, GUID, HRESULT, IUnknown
 from comtypes.client import CreateObject
 
-from config import AppConfig, preferred_devices
+from config import AppConfig, is_preferred_device, preferred_devices, remove_preferred_device, upsert_preferred_device
 
 try:
     from pycaw.constants import CLSID_MMDeviceEnumerator
@@ -168,6 +168,41 @@ class AudioDeviceManager:
                 result.append(AudioDevice(preferred.id, preferred.name, kind, is_missing=True))
             seen.add(preferred.id)
         return result
+
+    def get_saved_devices(self, kind: DeviceKind) -> list[AudioDevice]:
+        """Return only devices saved in config.json without scanning Windows audio endpoints."""
+
+        if self.config is None:
+            return []
+
+        return [
+            AudioDevice(preferred.id, preferred.name, kind)
+            for preferred in preferred_devices(self.config, kind.value)
+        ]
+
+    def is_device_available(self, device: AudioDevice) -> bool:
+        """Check whether a saved device currently exists in the active endpoint list."""
+
+        try:
+            return any(current.id == device.id for current in self.get_all_devices(device.kind))
+        except Exception:
+            LOGGER.exception("Failed to check availability for saved device: %s", device.name)
+            return False
+
+    def is_saved_device(self, device: AudioDevice) -> bool:
+        if self.config is None:
+            return False
+        return is_preferred_device(self.config, device.kind.value, device.id)
+
+    def save_device(self, device: AudioDevice) -> None:
+        if self.config is None:
+            return
+        upsert_preferred_device(self.config, device.kind.value, device.id, device.name)
+
+    def remove_saved_device(self, device: AudioDevice) -> bool:
+        if self.config is None:
+            return False
+        return remove_preferred_device(self.config, device.kind.value, device.id)
 
     def set_default(self, device: AudioDevice) -> None:
         """Set the normal default device. Console and multimedia are updated."""

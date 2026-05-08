@@ -2,17 +2,34 @@
 
 A standalone Windows desktop app for switching default playback and recording audio devices.
 
-The app supports:
+## Features
 
 - Playback and Recording tabs
-- Set device as Default, Communications, or Both
-- Double-click a device to set Both roles
-- Saved/preferred device view by default
-- Toggle to show all available devices
-- Missing saved-device warnings
-- System tray quick switching
-- Korean device names
-- Windows 10 / 11 without administrator rights where possible
+- Set a device as:
+  - Default
+  - Communications
+  - Both
+- Saved/preferred device system
+- First launch automatically shows all devices when no saved devices exist
+- `Show All Devices` / `Show Saved Devices Only` toggle per tab
+- In `Show All Devices` mode:
+  - The right column shows `Saved`
+  - Double-click toggles whether a device is saved
+  - Saved devices are shown as `✓ Saved`
+- In `Show Saved Devices Only` mode:
+  - The right column shows the current role
+  - Double-click sets `Both`
+- System tray menu:
+  - `Open Controller`
+  - `Both`
+  - `Communication`
+  - `Default`
+  - `Exit`
+- Closing the controller window hides it instead of exiting the app
+- Tray `Exit` fully quits the app
+- Optional Windows startup registration
+- Korean device names and Korean UI status messages
+- Windows 10 / 11 support without administrator rights where possible
 
 ## Requirements
 
@@ -29,17 +46,43 @@ pip install -r requirements.txt
 py main.py
 ```
 
+## Startup Behavior
+
+The app has a `Windows 시작 시 자동 실행` checkbox.
+
+When enabled, the app registers itself in:
+
+```text
+HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+```
+
+Startup launches the app with:
+
+```text
+--minimized
+```
+
+That means:
+
+- Normal launch: controller window opens and tray icon stays active
+- Windows startup launch: controller window stays hidden and only the tray icon appears
+- Window close button: hides the controller
+- Tray `Open Controller`: shows the controller again
+- Tray `Exit`: fully exits
+
 ## SoundVolumeView Fallback
 
-The primary switching path uses `pycaw` and `comtypes`. If direct COM switching fails, the app can fall back to NirSoft SoundVolumeView.
+The primary switching path uses `pycaw` and `comtypes`.
 
-To enable the fallback:
+`SoundVolumeView.exe` is optional. The app can run without it if direct COM switching works on your system.
+
+To enable fallback switching:
 
 1. Download `SoundVolumeView.exe` from NirSoft.
-2. Place `SoundVolumeView.exe` next to `main.py`.
+2. Place `SoundVolumeView.exe` next to `main.py` or the built `.exe`.
 3. Run the app normally.
 
-`SoundVolumeView.exe` is intentionally ignored by git because it is a third-party binary.
+`SoundVolumeView.exe` is ignored by git because it is a third-party binary.
 
 ## Build EXE
 
@@ -49,27 +92,39 @@ Install PyInstaller:
 pip install pyinstaller
 ```
 
-Build:
+Build without SoundVolumeView:
+
+```powershell
+pyinstaller --noconfirm --windowed --name "WindowsAudioDeviceSwitcher" main.py
+```
+
+Optional build with SoundVolumeView bundled:
 
 ```powershell
 pyinstaller --noconfirm --windowed --name "WindowsAudioDeviceSwitcher" --add-binary "SoundVolumeView.exe;." main.py
 ```
 
-If you do not bundle SoundVolumeView, remove the `--add-binary` option.
+Only use the second command if `SoundVolumeView.exe` exists in the project folder.
 
 ## Files
 
 - `main.py` - application entry point
 - `ui.py` - CustomTkinter/Tkinter UI and tray menu
 - `device_manager.py` - Windows audio device enumeration and switching
-- `config.py` - config and preferred-device persistence
+- `config.py` - config, preferred-device persistence, and startup registration
 - `requirements.txt` - Python dependencies
 
-## Notes
+## Local Files
 
-- `config.json` stores local preferred device IDs and names, so it is ignored by git.
-- `audio_switcher.log` contains local runtime logs, so it is ignored by git.
-- Administrator rights should not be required for normal device switching.
+The following files are local runtime/build artifacts and are ignored by git:
+
+- `.venv/`
+- `config.json`
+- `audio_switcher.log`
+- `SoundVolumeView.exe`
+- `build/`
+- `dist/`
+- `*.spec`
 
 ## License
 
