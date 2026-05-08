@@ -20,6 +20,7 @@ CONFIG_PATH = APP_DIR / "config.json"
 LOG_PATH = APP_DIR / "audio_switcher.log"
 STARTUP_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 STARTUP_REG_NAME = "WindowsAudioDeviceSwitcher"
+BUILT_EXE_PATH = APP_DIR / "dist" / "WindowsAudioDeviceSwitcher" / "WindowsAudioDeviceSwitcher.exe"
 
 
 @dataclass(slots=True)
@@ -168,6 +169,8 @@ def startup_command() -> str:
 
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}" --minimized'
+    if BUILT_EXE_PATH.exists():
+        return f'"{BUILT_EXE_PATH}" --minimized'
     return f'"{sys.executable}" "{APP_DIR / "main.py"}" --minimized'
 
 
@@ -200,3 +203,18 @@ def is_startup_enabled() -> bool:
     except OSError:
         logging.exception("Failed to read startup registration")
         return False
+
+
+def current_startup_command() -> str | None:
+    if winreg is None:
+        return None
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, STARTUP_REG_PATH, 0, winreg.KEY_READ) as key:
+            value, _value_type = winreg.QueryValueEx(key, STARTUP_REG_NAME)
+            return str(value)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        logging.exception("Failed to read startup command")
+        return None

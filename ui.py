@@ -24,10 +24,11 @@ except Exception:  # pragma: no cover - tray is optional.
 
 from config import (
     AppConfig,
+    current_startup_command,
     has_preferred_devices,
-    is_startup_enabled,
     save_config,
     set_startup_enabled,
+    startup_command,
     upsert_preferred_device,
 )
 from device_manager import AudioDevice, AudioDeviceManager, DeviceKind
@@ -79,6 +80,8 @@ class AudioSwitcherApp:
         self._restore_geometry()
         self.root.minsize(860, 520)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_controller)
+        if self.start_minimized:
+            self.root.withdraw()
 
         self.normal_font = tkfont.Font(family="Segoe UI", size=11)
         self.bold_font = tkfont.Font(family="Segoe UI", size=11, weight="bold")
@@ -97,8 +100,6 @@ class AudioSwitcherApp:
         self._apply_initial_startup_preference()
         self.refresh_all()
         self._start_tray_icon()
-        if self.start_minimized:
-            self.root.after(0, self.hide_controller)
         self._schedule_auto_refresh()
 
     def run(self) -> None:
@@ -421,7 +422,7 @@ class AudioSwitcherApp:
 
     def _apply_initial_startup_preference(self) -> None:
         try:
-            if self.config.start_with_windows and not is_startup_enabled():
+            if self.config.start_with_windows and current_startup_command() != startup_command():
                 set_startup_enabled(True)
         except Exception:
             LOGGER.exception("Failed to apply startup preference")
