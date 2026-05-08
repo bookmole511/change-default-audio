@@ -42,7 +42,6 @@ class PreferredDevice:
 @dataclass(slots=True)
 class AppConfig:
     window: WindowState = field(default_factory=WindowState)
-    auto_refresh: bool = True
     start_with_windows: bool = True
     preferred_playback: list[PreferredDevice] = field(default_factory=list)
     preferred_recording: list[PreferredDevice] = field(default_factory=list)
@@ -105,7 +104,6 @@ def load_config() -> AppConfig:
         raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         config = AppConfig(
             window=_coerce_window(raw.get("window", {})),
-            auto_refresh=bool(raw.get("auto_refresh", True)),
             start_with_windows=bool(raw.get("start_with_windows", True)),
             preferred_playback=_coerce_preferred_list(raw.get("preferred_playback", [])),
             preferred_recording=_coerce_preferred_list(raw.get("preferred_recording", [])),

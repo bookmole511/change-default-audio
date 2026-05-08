@@ -11,12 +11,12 @@ A standalone Windows desktop app for switching default playback and recording au
   - Both
 - Saved/preferred device system
 - First launch automatically shows all devices when no saved devices exist
-- `Show All Devices` / `Show Saved Devices Only` toggle per tab
-- In `Show All Devices` mode:
+- `장비 등록` / `장비 스위칭` mode per tab
+- In `장비 등록` mode:
   - The right column shows `Saved`
   - Double-click toggles whether a device is saved
   - Saved devices are shown as `✓ Saved`
-- In `Show Saved Devices Only` mode:
+- In `장비 스위칭` mode:
   - The right column shows the current role
   - Double-click sets `Both`
 - System tray menu:

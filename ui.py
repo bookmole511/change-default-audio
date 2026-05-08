@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import socket
 import threading
 import tkinter as tk
 from tkinter import font as tkfont
@@ -35,8 +36,7 @@ from device_manager import AudioDevice, AudioDeviceManager, DeviceKind
 
 
 LOGGER = logging.getLogger(__name__)
-AUTO_REFRESH_MS = 5000
-MISSING_WARNING = "Warning: Saved device '{device_name}' is not currently connected or available."
+MISSING_WARNING = "저장된 장치 '{device_name}'가 현재 연결되어 있지 않습니다."
 
 STATUS_TEXT: dict[str, str] = {
     "Both": "\u25cf Both",
@@ -51,21 +51,43 @@ STATUS_COLORS: dict[str, str] = {
     "Not found": "#8A8F98",
     "Normal": "#E8EAED",
 }
+
 SAVED_TEXT = "✓ Saved"
 NOT_SAVED_TEXT = "Off"
 STARTUP_LABEL = "Windows 시작 시 자동 실행"
+REGISTER_MODE_LABEL = "장비 등록"
+SWITCH_MODE_LABEL = "장비 스위칭"
+REGISTER_MODE_DESCRIPTION = "더블클릭하여 사용할 장치로 등록할 수 있습니다. 등록된 장치는 스위칭 모드에서 설정해주세요."
+SWITCH_MODE_DESCRIPTION = "더블클릭하여 Both로 설정할 수 있습니다."
+FIRST_TIME_HELP = "등록하고 싶은 장치를 더블클릭하여 장비로 등록하세요."
 
 
 class AudioSwitcherApp:
     """Main application window."""
 
-    def __init__(self, manager: AudioDeviceManager, config: AppConfig, start_minimized: bool = False) -> None:
+    def __init__(
+        self,
+        manager: AudioDeviceManager,
+        config: AppConfig,
+        start_minimized: bool = False,
+        ipc_socket: socket.socket | None = None,
+    ) -> None:
         self.manager = manager
         self.config = config
         self.start_minimized = start_minimized
-        self.devices: dict[DeviceKind, list[AudioDevice]] = {DeviceKind.PLAYBACK: [], DeviceKind.RECORDING: []}
-        self.selected: dict[DeviceKind, AudioDevice | None] = {DeviceKind.PLAYBACK: None, DeviceKind.RECORDING: None}
+        self.ipc_socket = ipc_socket
+        self.ipc_running = False
+        self.devices: dict[DeviceKind, list[AudioDevice]] = {
+            DeviceKind.PLAYBACK: [],
+            DeviceKind.RECORDING: [],
+        }
+        self.selected: dict[DeviceKind, AudioDevice | None] = {
+            DeviceKind.PLAYBACK: None,
+            DeviceKind.RECORDING: None,
+        }
         self.view_toggle_buttons: dict[DeviceKind, object] = {}
+        self.mode_description_vars: dict[DeviceKind, tk.StringVar] = {}
+        self.treeviews: dict[DeviceKind, ttk.Treeview] = {}
         self.missing_warned: set[str] = set()
         self.tray_icon: pystray.Icon | None = None if pystray else None
 
@@ -88,19 +110,17 @@ class AudioSwitcherApp:
         self._configure_tree_style()
 
         self.status_var = tk.StringVar(value="Ready")
-        self.auto_refresh_var = tk.BooleanVar(value=self.config.auto_refresh)
         self.startup_var = tk.BooleanVar(value=self.config.start_with_windows)
         self.show_all_vars: dict[DeviceKind, tk.BooleanVar] = {
             DeviceKind.PLAYBACK: tk.BooleanVar(value=not has_preferred_devices(self.config, DeviceKind.PLAYBACK.value)),
             DeviceKind.RECORDING: tk.BooleanVar(value=not has_preferred_devices(self.config, DeviceKind.RECORDING.value)),
         }
 
-        self.treeviews: dict[DeviceKind, ttk.Treeview] = {}
         self._build_ui()
         self._apply_initial_startup_preference()
         self.refresh_all()
         self._start_tray_icon()
-        self._schedule_auto_refresh()
+        self._start_ipc_server()
 
     def run(self) -> None:
         self.root.mainloop()
@@ -151,18 +171,12 @@ class AudioSwitcherApp:
         footer.grid(row=1, column=0, sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(footer, textvariable=self.status_var, anchor="w").grid(row=0, column=0, padx=12, pady=8, sticky="ew")
-        ctk.CTkSwitch(
-            footer,
-            text="Auto-refresh",
-            variable=self.auto_refresh_var,
-            command=self._on_auto_refresh_changed,
-        ).grid(row=0, column=1, padx=12, pady=8)
         ctk.CTkCheckBox(
             footer,
             text=STARTUP_LABEL,
             variable=self.startup_var,
             command=self._on_startup_changed,
-        ).grid(row=0, column=2, padx=12, pady=8)
+        ).grid(row=0, column=1, padx=12, pady=8)
 
     def _build_tk_ui(self) -> None:
         self.root.grid_columnconfigure(0, weight=1)
@@ -176,9 +190,6 @@ class AudioSwitcherApp:
         footer = tk.Frame(self.root)
         footer.grid(row=1, column=0, sticky="ew")
         tk.Label(footer, textvariable=self.status_var, anchor="w").pack(side="left", fill="x", expand=True, padx=8, pady=6)
-        tk.Checkbutton(footer, text="Auto-refresh", variable=self.auto_refresh_var, command=self._on_auto_refresh_changed).pack(
-            side="right", padx=8
-        )
         tk.Checkbutton(footer, text=STARTUP_LABEL, variable=self.startup_var, command=self._on_startup_changed).pack(
             side="right", padx=8
         )
@@ -191,25 +202,22 @@ class AudioSwitcherApp:
         toolbar.grid(row=0, column=0, padx=10, pady=10, sticky="ew")
         toolbar.grid_columnconfigure(5, weight=1)
 
-        toggle = self._button(toolbar, "Show All Devices", lambda k=kind: self._toggle_device_view(k))
+        toggle = self._button(toolbar, self._mode_button_text(kind), lambda k=kind: self._toggle_device_view(k))
         toggle.grid(row=0, column=0, padx=(0, 8), pady=6)
         self.view_toggle_buttons[kind] = toggle
-        self._button(toolbar, "Refresh", lambda k=kind: self.refresh(k)).grid(row=0, column=1, padx=4, pady=6)
-        self._button(toolbar, "Set as Default", lambda k=kind: self._act(k, self.manager.set_default)).grid(
-            row=0, column=2, padx=4, pady=6
-        )
-        self._button(toolbar, "Set as Communications", lambda k=kind: self._act(k, self.manager.set_communications)).grid(
+
+        description_var = tk.StringVar(value=self._mode_description(kind))
+        self.mode_description_vars[kind] = description_var
+        self._label(toolbar, description_var).grid(row=1, column=0, columnspan=5, padx=(0, 8), pady=(0, 6), sticky="w")
+
+        self._button(toolbar, "새로고침", lambda k=kind: self.refresh(k)).grid(row=0, column=1, padx=4, pady=6)
+        self._button(toolbar, "Default", lambda k=kind: self._act(k, self.manager.set_default)).grid(row=0, column=2, padx=4, pady=6)
+        self._button(toolbar, "Communication", lambda k=kind: self._act(k, self.manager.set_communications)).grid(
             row=0, column=3, padx=4, pady=6
         )
-        self._button(toolbar, "Set Both", lambda k=kind: self._act(k, self.manager.set_both)).grid(row=0, column=4, padx=4, pady=6)
+        self._button(toolbar, "Both", lambda k=kind: self._act(k, self.manager.set_both)).grid(row=0, column=4, padx=4, pady=6)
 
-        tree = ttk.Treeview(
-            parent,
-            columns=("device", "role"),
-            show="headings",
-            selectmode="browse",
-            style="Device.Treeview",
-        )
+        tree = ttk.Treeview(parent, columns=("device", "role"), show="headings", selectmode="browse", style="Device.Treeview")
         tree.heading("device", text="Device")
         tree.heading("role", text="Current Role")
         tree.column("device", width=620, minwidth=280, stretch=True, anchor="w")
@@ -234,24 +242,30 @@ class AudioSwitcherApp:
     def _button(self, parent: object, text: str, command: Callable[[], None]) -> object:
         return ctk.CTkButton(parent, text=text, command=command) if ctk else tk.Button(parent, text=text, command=command)
 
+    def _label(self, parent: object, textvariable: tk.StringVar) -> object:
+        if ctk:
+            return ctk.CTkLabel(parent, textvariable=textvariable, anchor="w", text_color="#AAB2BD")
+        return tk.Label(parent, textvariable=textvariable, anchor="w", fg="#666666")
+
     def refresh_all(self) -> None:
         self.refresh(DeviceKind.PLAYBACK)
         self.refresh(DeviceKind.RECORDING)
 
     def refresh(self, kind: DeviceKind) -> None:
         try:
-            if self.show_all_vars[kind].get():
-                self.devices[kind] = self.manager.get_all_devices(kind)
-            else:
-                self.devices[kind] = self.manager.get_preferred_devices(kind)
+            self.devices[kind] = self.manager.get_all_devices(kind) if self.show_all_vars[kind].get() else self.manager.get_preferred_devices(kind)
             self._update_tree_heading(kind)
+            self._update_toggle_label(kind)
             self._render_devices(kind)
-            label = "all" if self.show_all_vars[kind].get() else "saved"
-            self._set_status(f"Loaded {len(self.devices[kind])} {label} {kind.value} devices.")
+            if self.show_all_vars[kind].get() and not has_preferred_devices(self.config, kind.value):
+                self._set_status(FIRST_TIME_HELP)
+            else:
+                mode = REGISTER_MODE_LABEL if self.show_all_vars[kind].get() else SWITCH_MODE_LABEL
+                self._set_status(f"{mode}: {len(self.devices[kind])}개 장치를 불러왔습니다.")
             self._warn_missing_devices(kind)
         except Exception as exc:
             LOGGER.exception("Failed to refresh %s devices", kind.value)
-            self._set_status(f"Error: {exc}")
+            self._set_status(f"오류: {exc}")
 
     def _render_devices(self, kind: DeviceKind) -> None:
         tree = self.treeviews[kind]
@@ -268,22 +282,10 @@ class AudioSwitcherApp:
                 role_text = self._status_text(device)
                 device_text = f"{device.name} ({role_text})" if role_text else device.name
                 tag = self._status_tag(device)
-            tree.insert(
-                "",
-                "end",
-                iid=str(index),
-                values=(device_text, role_text or "-"),
-                tags=(tag,),
-            )
+            tree.insert("", "end", iid=str(index), values=(device_text, role_text or "-"), tags=(tag,))
 
         if not self.devices[kind] and not self.show_all_vars[kind].get():
-            tree.insert(
-                "",
-                "end",
-                iid="empty",
-                values=("저장된 장치가 없습니다. 'Show All Devices'에서 더블클릭해 저장하세요.", "-"),
-                tags=("missing",),
-            )
+            tree.insert("", "end", iid="empty", values=("저장된 장치가 없습니다. 장비 등록 모드에서 더블클릭해 등록하세요.", "-"), tags=("missing",))
 
     def _status_text(self, device: AudioDevice) -> str:
         return STATUS_TEXT.get(device.status, "")
@@ -308,19 +310,28 @@ class AudioSwitcherApp:
 
     def _update_toggle_label(self, kind: DeviceKind) -> None:
         button = self.view_toggle_buttons.get(kind)
-        if not button:
-            return
-        text = "Show Saved Devices Only" if self.show_all_vars[kind].get() else "Show All Devices"
-        if ctk and hasattr(button, "configure"):
-            button.configure(text=text)
-        elif hasattr(button, "config"):
-            button.config(text=text)
+        if button:
+            text = self._mode_button_text(kind)
+            if ctk and hasattr(button, "configure"):
+                button.configure(text=text)
+            elif hasattr(button, "config"):
+                button.config(text=text)
+        description = self.mode_description_vars.get(kind)
+        if description:
+            description.set(self._mode_description(kind))
 
     def _update_tree_heading(self, kind: DeviceKind) -> None:
         tree = self.treeviews.get(kind)
-        if not tree:
-            return
-        tree.heading("role", text="Saved" if self.show_all_vars[kind].get() else "Current Role")
+        if tree:
+            tree.heading("role", text="Saved" if self.show_all_vars[kind].get() else "Current Role")
+
+    def _mode_button_text(self, kind: DeviceKind) -> str:
+        return SWITCH_MODE_LABEL if self.show_all_vars[kind].get() else REGISTER_MODE_LABEL
+
+    def _mode_description(self, kind: DeviceKind) -> str:
+        if self.show_all_vars[kind].get():
+            return FIRST_TIME_HELP if not has_preferred_devices(self.config, kind.value) else REGISTER_MODE_DESCRIPTION
+        return SWITCH_MODE_DESCRIPTION
 
     def _warn_missing_devices(self, kind: DeviceKind) -> None:
         for device in self.devices[kind]:
@@ -329,7 +340,7 @@ class AudioSwitcherApp:
             self.missing_warned.add(device.id)
             message = MISSING_WARNING.format(device_name=device.name)
             self._set_status(message)
-            messagebox.showwarning("Saved Device Missing", message)
+            messagebox.showwarning("저장된 장치 없음", message)
 
     def _on_select(self, kind: DeviceKind) -> None:
         device = self._selected_tree_device(kind)
@@ -355,19 +366,17 @@ class AudioSwitcherApp:
         if not item_id.isdigit():
             return None
         index = int(item_id)
-        if index >= len(self.devices[kind]):
-            return None
-        return self.devices[kind][index]
+        return self.devices[kind][index] if index < len(self.devices[kind]) else None
 
     def _act(self, kind: DeviceKind, action: Callable[[AudioDevice], None]) -> None:
         device = self.selected.get(kind)
         if not device:
-            self._set_status("Select a device first.")
+            self._set_status("장치를 먼저 선택하세요.")
             return
         if getattr(action, "__name__", "") == "set_both":
             self._set_both_device(kind, device, success_prefix="Set Both")
             return
-        self._apply_device_action(kind, device, action, success_message=f"Applied setting to {device.name}")
+        self._apply_device_action(kind, device, action, success_message=f"설정 완료: {device.name}")
 
     def _set_both_device(self, kind: DeviceKind, device: AudioDevice, success_prefix: str) -> None:
         self._apply_device_action(kind, device, self.manager.set_both, success_message=f"{success_prefix}: {device.name}")
@@ -382,7 +391,7 @@ class AudioSwitcherApp:
         if device.is_missing:
             message = MISSING_WARNING.format(device_name=device.name)
             self._set_status(message)
-            messagebox.showwarning("Saved Device Missing", message)
+            messagebox.showwarning("저장된 장치 없음", message)
             return
         try:
             action(device)
@@ -391,11 +400,12 @@ class AudioSwitcherApp:
             self._set_status(success_message)
         except Exception as exc:
             LOGGER.exception("Failed to apply setting to %s", device.name)
-            self._set_status(f"Error: {exc}")
+            self._set_status(f"오류: {exc}")
 
     def _remember(self, kind: DeviceKind, device: AudioDevice) -> None:
         upsert_preferred_device(self.config, kind.value, device.id, device.name)
         save_config(self.config)
+        self._refresh_tray_menu()
 
     def _toggle_saved_device(self, kind: DeviceKind, device: AudioDevice) -> None:
         if self.manager.is_saved_device(device):
@@ -403,22 +413,15 @@ class AudioSwitcherApp:
             if removed:
                 save_config(self.config)
                 self.refresh(kind)
+                self._refresh_tray_menu()
                 self._set_status(f"저장된 장치에서 제거되었습니다: {device.name}")
             return
 
         self.manager.save_device(device)
         save_config(self.config)
         self.refresh(kind)
+        self._refresh_tray_menu()
         self._set_status(f"장치가 저장되었습니다: {device.name}")
-
-    def _schedule_auto_refresh(self) -> None:
-        if self.auto_refresh_var.get():
-            self.refresh_all()
-        self.root.after(AUTO_REFRESH_MS, self._schedule_auto_refresh)
-
-    def _on_auto_refresh_changed(self) -> None:
-        self.config.auto_refresh = bool(self.auto_refresh_var.get())
-        save_config(self.config)
 
     def _apply_initial_startup_preference(self) -> None:
         try:
@@ -462,6 +465,8 @@ class AudioSwitcherApp:
         if not pystray or Image is None or ImageDraw is None:
             LOGGER.info("pystray/Pillow not available; tray icon disabled")
             return
+        if self.tray_icon is not None:
+            return
 
         image = Image.new("RGBA", (64, 64), (20, 24, 32, 255))
         draw = ImageDraw.Draw(image)
@@ -480,6 +485,16 @@ class AudioSwitcherApp:
         self.tray_icon = pystray.Icon("audio_switcher", image, "Windows Audio Device Switcher", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
+    def _refresh_tray_menu(self) -> None:
+        """Force pystray to rebuild cached Windows menu items after saved devices change."""
+
+        if not self.tray_icon:
+            return
+        try:
+            self.tray_icon.update_menu()
+        except Exception:
+            LOGGER.exception("Failed to refresh tray menu")
+
     def _tray_role_submenu_item(self, label: str, role: str) -> pystray.MenuItem:
         submenu = pystray.Menu(lambda r=role: self._create_role_submenu(r))
         try:
@@ -488,12 +503,6 @@ class AudioSwitcherApp:
             return pystray.MenuItem(label, submenu)
 
     def _create_role_submenu(self, role: str) -> list[pystray.MenuItem]:
-        """Return a lightweight submenu of saved devices for one tray role.
-
-        This method reads only config-backed preferred devices. It intentionally
-        avoids full pycaw enumeration so right-click and hover remain fast.
-        """
-
         if not pystray:
             return []
 
@@ -536,10 +545,34 @@ class AudioSwitcherApp:
         action, label = actions[role]
         self._apply_device_action(device.kind, device, action, success_message=f"{label}: {device.name}")
 
+    def _start_ipc_server(self) -> None:
+        if self.ipc_socket is None:
+            return
+        self.ipc_running = True
+        threading.Thread(target=self._ipc_loop, daemon=True).start()
+
+    def _ipc_loop(self) -> None:
+        while self.ipc_running and self.ipc_socket is not None:
+            try:
+                conn, _addr = self.ipc_socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with conn:
+                try:
+                    command = conn.recv(64).strip().upper()
+                except OSError:
+                    continue
+            if command == b"SHOW":
+                self.root.after(0, self._show_window)
+
     def _show_window(self) -> None:
         self.root.deiconify()
         self.root.state("normal")
         self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(250, lambda: self.root.attributes("-topmost", False))
         self.root.focus_force()
 
     def hide_controller(self) -> None:
@@ -548,7 +581,15 @@ class AudioSwitcherApp:
         self._set_status("컨트롤러 창이 숨겨졌습니다. 트레이에서 다시 열 수 있습니다.")
 
     def exit_application(self) -> None:
+        self.ipc_running = False
+        if self.ipc_socket is not None:
+            try:
+                self.ipc_socket.close()
+            except OSError:
+                pass
+            self.ipc_socket = None
         self._save_geometry()
         if self.tray_icon:
             self.tray_icon.stop()
+            self.tray_icon = None
         self.root.destroy()
