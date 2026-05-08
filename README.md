@@ -2,6 +2,10 @@
 
 A standalone Windows desktop app for switching default playback and recording audio devices.
 
+**Motivation**
+
+I frequently switch between multiple audio devices (headsets, earphones, speakers, etc.) and found it inconvenient to change the default devices in Discord and other applications every time. This tool was created to make switching default playback and recording devices quick and seamless.
+
 ## Features
 
 - Playback and Recording tabs
