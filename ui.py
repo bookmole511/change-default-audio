@@ -225,6 +225,7 @@ class AudioSwitcherApp:
         tree.grid(row=1, column=0, padx=10, pady=(0, 10), sticky="nsew")
         tree.bind("<<TreeviewSelect>>", lambda _event, device_kind=kind: self._on_select(device_kind))
         tree.bind("<Double-1>", lambda _event, device_kind=kind: self._on_double_click(device_kind))
+        tree.bind("<Button-3>", lambda _event, device_kind=kind: self._on_right_click(_event, device_kind))
         self._configure_tree_tags(tree)
         self.treeviews[kind] = tree
 
@@ -357,6 +358,36 @@ class AudioSwitcherApp:
             self._toggle_saved_device(kind, device)
             return
         self._set_both_device(kind, device, success_prefix="Set Both")
+
+    def _on_right_click(self, event: tk.Event, kind: DeviceKind) -> None:
+        tree = event.widget
+
+        item_id = tree.identify_row(event.y)
+        if not item_id or not item_id.isdigit():
+            return
+
+        tree.selection_set(item_id)
+
+        index = int(item_id)
+        if index >= len(self.devices[kind]):
+            return
+
+        device = self.devices[kind][index]
+        self.selected[kind] = device
+
+        if not self.manager.is_saved_device(device):
+            return
+
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(
+            label="장비 제거",
+            command=lambda d=device: self._toggle_saved_device(kind, d),
+        )
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def _selected_tree_device(self, kind: DeviceKind) -> AudioDevice | None:
         selection = self.treeviews[kind].selection()
