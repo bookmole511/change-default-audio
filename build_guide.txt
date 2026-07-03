@@ -1,0 +1,13 @@
+빌드
+cd D:\projects\change-default-audio
+.\.venv\Scripts\activate
+pyinstaller --noconfirm WindowsAudioDeviceSwitcher.spec
+
+실행
+.\dist\WindowsAudioDeviceSwitcher\WindowsAudioDeviceSwitcher.exe
+
+명령어로 시작프로그램 등록
+"D:\projects\change-default-audio\dist\WindowsAudioDeviceSwitcher\WindowsAudioDeviceSwitcher.exe" --minimized
+
+시작프로그램 등록확인
+Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" | Select-Object WindowsAudioDeviceSwitcher
